@@ -1,7 +1,7 @@
 DATA:
-  data_root: /mnt/backup/project/hszhao/dataset/voc2012
-  train_list: /mnt/backup/project/hszhao/dataset/voc2012/list/train_aug.txt
-  val_list: /mnt/backup/project/hszhao/dataset/voc2012/list/val.txt
+  data_root: /work/sagnihot/datasets/VOCdevkit/VOC2012
+  train_list: dataset/voc2012/list/train_aug.txt
+  val_list: dataset/voc2012/list/val.txt
   classes: 21
 
 TRAIN:
@@ -45,7 +45,7 @@ Distributed:
   loss_scale:
 
 TEST:
-  test_list: /mnt/backup/project/hszhao/dataset/voc2012/list/val.txt
+  test_list: dataset/voc2012/list/val.txt
   split: val  # split in [train, val and test]
   base_size: 512  # based size for scaling
   test_h: 473

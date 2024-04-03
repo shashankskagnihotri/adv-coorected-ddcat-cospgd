@@ -1,7 +1,7 @@
 DATA:
-  data_root: /mnt/backup/project/hszhao/dataset/cityscapes
-  train_list: /mnt/backup/project/hszhao/dataset/cityscapes/list/fine_train.txt
-  val_list: /mnt/backup/project/hszhao/dataset/cityscapes/list/fine_val.txt
+  data_root: datasets/cityscapes
+  train_list: dataset/cityscapes/list/fine_train.txt
+  val_list: dataset/cityscapes/list/fine_val.txt
   classes: 19
 
 TRAIN:
@@ -45,7 +45,7 @@ Distributed:
   loss_scale:
 
 TEST:
-  test_list: /mnt/backup/project/hszhao/dataset/cityscapes/list/fine_val.txt
+  test_list: dataset/cityscapes/list/fine_val.txt
   split: val  # split in [train, val and test]
   base_size: 1024  # based size for scaling
   test_h: 449

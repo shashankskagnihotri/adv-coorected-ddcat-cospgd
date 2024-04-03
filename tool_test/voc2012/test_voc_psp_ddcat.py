@@ -21,24 +21,49 @@ from torch import optim
 from torch import autograd
 import random
 from torch.autograd import grad
+import torchvision
+
+from cospgd import functions as attack_funcs
 
 cv2.ocl.setUseOpenCL(False)
+
+torch.cuda.empty_cache()
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:24"
 
 
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Semantic Segmentation')
     parser.add_argument('--config', type=str, default='config/ade20k/ade20k_pspnet50.yaml', help='config file')
     parser.add_argument('--attack', action='store_true', help='evaluate the model with attack or not')
+    parser.add_argument('--attack_name', type=str, default='BIM', help='name of the attack, default BIM, options: cospgd, segpgd, pgd')
+    parser.add_argument('--attack_iterations', type=int, default=4, help='iterations for the attack')
+    parser.add_argument('--attack_epsilon', type=float, default=0.03, help='epsilon for the attack')
+    parser.add_argument('--attack_alpha', type=float, default=0.01, help='alpha for the attack')
+    parser.add_argument('--gpu_id', type=str, default='0', help='GPU id to be used')
     parser.add_argument('opts', help='see config/ade20k/ade20k_pspnet50.yaml for all options', default=None, nargs=argparse.REMAINDER)
     args = parser.parse_args()
     assert args.config is not None
 
     global attack_flag
+    global attack_flag
+    global attack_name
+    global attack_iterations
+    global attack_epsilon
+    global attack_alpha
+    global gpu_id
+    gpu_id = args.gpu_id
+    os.environ["CUDA_VISIBLE_DEVICES"] = '{}'.format(gpu_id)
+    
     if args.attack:
         attack_flag = True
     else:
         attack_flag = False
 
+    attack_name = args.attack_name
+    attack_iterations = args.attack_iterations
+    attack_epsilon = args.attack_epsilon
+    attack_alpha = args.attack_alpha*255
+    
     cfg = config.load_cfg_from_cfg_file(args.config)
     if args.opts is not None:
         cfg = config.merge_cfg_from_list(cfg, args.opts)
@@ -91,31 +116,51 @@ def FGSM(input, target, model, clip_min, clip_max, eps=0.2):
     return adversarial_example
 
 
-
-def BIM(input, target, model, eps=0.03, k_number=2, alpha=0.01):
+@torch.autocast(device_type="cuda")
+def BIM(input, target, model, eps=0.03, k_number=2, alpha=0.01, normalize_layer=None):
+    """
     input_unnorm = input.clone().detach()
     input_unnorm[:, 0, :, :] = input_unnorm[:, 0, :, :] * std_origin[0] + mean_origin[0]
     input_unnorm[:, 1, :, :] = input_unnorm[:, 1, :, :] * std_origin[1] + mean_origin[1]
     input_unnorm[:, 2, :, :] = input_unnorm[:, 2, :, :] * std_origin[2] + mean_origin[2]
     clip_min = input_unnorm - eps
     clip_max = input_unnorm + eps
+    """
+    global attack_name, attack_iterations, attack_epsilon, attack_alpha
+    
+    orig_images = input.detach().clone()
+    
+    if 'pgd' in attack_name:
+        input = attack_funcs.init_linf(images=input, epsilon=attack_epsilon, clamp_min=0, clamp_max=255)
+    
+    ignore_label = 255
+    criterion = nn.CrossEntropyLoss(ignore_index=ignore_label, reduction='none').cuda()
 
     adversarial_example = input.detach().clone()
-    adversarial_example.requires_grad = True
-    for mm in range(k_number):
-        adversarial_example = FGSM(adversarial_example, target, model, clip_min, clip_max, eps=alpha)
-        adversarial_example = adversarial_example.detach()
-        adversarial_example.requires_grad = True
+    
+    for itr in range(attack_iterations):
+        #adversarial_example = FGSM(adversarial_example, target, model, clip_min, clip_max, eps=alpha)
         model.zero_grad()
+        adversarial_example.requires_grad = True
+        result = model(normalize_layer(adversarial_example))
+        loss = criterion(result, target.detach())
+        if attack_name.lower()=='cospgd':
+            loss = attack_funcs.cospgd_scale(predictions=result, labels=target, loss=loss, num_classes=21, targeted=False, one_hot=True)
+        elif attack_name.lower()=='segpgd':
+            loss = attack_funcs.segpgd_scale(predictions=result, labels=target, loss=loss, iteration=itr, iterations=attack_iterations, targeted=False)
+        
+        loss.mean().backward()
+        adversarial_example = attack_funcs.step_inf(perturbed_image=adversarial_example, epsilon=attack_epsilon, data_grad=adversarial_example.grad, orig_image=orig_images, alpha=attack_alpha, targeted=False, clamp_min=0, clamp_max=255)
+
     return adversarial_example
 
 
 
 def main():
-    global args, logger
+    global args, logger, gpu_id
     args = get_parser()
     logger = get_logger()
-    # os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.test_gpu)
+    
     logger.info(args)
     assert args.classes > 1
     assert args.zoom_factor in [1, 2, 4, 8]
@@ -134,6 +179,12 @@ def main():
     global std_origin
     mean_origin = [0.485, 0.456, 0.406]
     std_origin = [0.229, 0.224, 0.225]
+    
+    if attack_flag:
+        args.save_folder = os.path.join(args.save_folder, '{}_attack'.format(attack_name), 'itrs_{}'.format(attack_iterations), 'eps_{}'.format(attack_epsilon), 'alpha_{}'.format(attack_alpha))
+    else:
+        args.save_folder = os.path.join(args.save_folder, 'no_attack')
+
 
     gray_folder = os.path.join(args.save_folder, 'gray')
     color_folder = os.path.join(args.save_folder, 'color')
@@ -162,21 +213,23 @@ def main():
             logger.info("=> loaded checkpoint '{}'".format(args.model_path))
         else:
             raise RuntimeError("=> no checkpoint found at '{}'".format(args.model_path))
-        test(test_loader, test_data.data_list, model, args.classes, mean, std, args.base_size, args.test_h, args.test_w, args.scales, gray_folder, color_folder, colors)
+        normalize_layer =  torchvision.transforms.Normalize(mean=mean, std=std)
+        test(test_loader, test_data.data_list, model, args.classes, mean, std, args.base_size, args.test_h, args.test_w, args.scales, gray_folder, color_folder, colors, normalize_layer=normalize_layer)
     if args.split != 'test':
         cal_acc(test_data.data_list, gray_folder, args.classes, names)
 
 
-def net_process(model, image, target, mean, std=None):
+def net_process(model, image, target, mean, std=None, normalize_layer=None):
     input = torch.from_numpy(image.transpose((2, 0, 1))).float()
     target = torch.from_numpy(target).long()
-
+    """
     if std is None:
         for t, m in zip(input, mean):
             t.sub_(m)
     else:
         for t, m, s in zip(input, mean, std):
             t.sub_(m).div_(s)
+    """
     input = input.unsqueeze(0).cuda()
     target = target.unsqueeze(0).cuda()
 
@@ -190,12 +243,12 @@ def net_process(model, image, target, mean, std=None):
         target = torch.cat([target, target.flip(2)], 0)
 
     if attack_flag:
-        adver_input = BIM(input, target, model, eps=0.03, k_number=2, alpha=0.01)
+        adver_input = BIM(input, target, model, eps=0.03, k_number=2, alpha=0.01, normalize_layer=normalize_layer)
         with torch.no_grad():
-            output = model(adver_input)
+            output = model(normalize_layer(adver_input))
     else:
         with torch.no_grad():
-            output = model(input)
+            output = model(normalize_layer(input))
 
     _, _, h_i, w_i = input.shape
     _, _, h_o, w_o = output.shape
@@ -212,7 +265,7 @@ def net_process(model, image, target, mean, std=None):
     return output
 
 
-def scale_process(model, image, target, classes, crop_h, crop_w, h, w, mean, std=None, stride_rate=2/3):
+def scale_process(model, image, target, classes, crop_h, crop_w, h, w, mean, std=None, stride_rate=2/3, normalize_layer=None):
     ori_h, ori_w, _ = image.shape
     pad_h = max(crop_h - ori_h, 0)
     pad_w = max(crop_w - ori_w, 0)
@@ -241,14 +294,14 @@ def scale_process(model, image, target, classes, crop_h, crop_w, h, w, mean, std
 
             target_crop = target[s_h:e_h, s_w:e_w].copy()
             count_crop[s_h:e_h, s_w:e_w] += 1
-            prediction_crop[s_h:e_h, s_w:e_w, :] += net_process(model, image_crop, target_crop, mean, std)
+            prediction_crop[s_h:e_h, s_w:e_w, :] += net_process(model, image_crop, target_crop, mean, std, normalize_layer=normalize_layer)
     prediction_crop /= np.expand_dims(count_crop, 2)
     prediction_crop = prediction_crop[pad_h_half:pad_h_half+ori_h, pad_w_half:pad_w_half+ori_w]
     prediction = cv2.resize(prediction_crop, (w, h), interpolation=cv2.INTER_LINEAR)
     return prediction
 
 
-def test(test_loader, data_list, model, classes, mean, std, base_size, crop_h, crop_w, scales, gray_folder, color_folder, colors):
+def test(test_loader, data_list, model, classes, mean, std, base_size, crop_h, crop_w, scales, gray_folder, color_folder, colors, normalize_layer=None):
     logger.info('>>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>')
     data_time = AverageMeter()
     batch_time = AverageMeter()
@@ -278,7 +331,7 @@ def test(test_loader, data_list, model, classes, mean, std, base_size, crop_h, c
             image_scale = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
             target_scale = cv2.resize(target.astype(np.uint8), (new_w, new_h), interpolation=cv2.INTER_NEAREST)
 
-            prediction += scale_process(model, image_scale, target_scale, classes, crop_h, crop_w, h, w, mean, std)
+            prediction += scale_process(model, image_scale, target_scale, classes, crop_h, crop_w, h, w, mean, std, normalize_layer=normalize_layer)
         prediction /= len(scales)
         prediction = np.argmax(prediction, axis=2)
         batch_time.update(time.time() - end)

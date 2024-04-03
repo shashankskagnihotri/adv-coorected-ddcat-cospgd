@@ -56,6 +56,7 @@ def FGSM(input, target, model, clip_min, clip_max, eps=0.2):
     input_variable = input.detach().clone()
     input_variable.requires_grad = True
     model.zero_grad()
+    import ipdb;ipdb.set_trace()
     result = model(input_variable)
     if args.zoom_factor != 8:
         h = int((target.size()[1] - 1) / 8 * args.zoom_factor + 1)
@@ -167,6 +168,7 @@ def net_process(model, image, target, mean, std=None):
     input = torch.from_numpy(image.transpose((2, 0, 1))).float()
     target = torch.from_numpy(target).long()
 
+    import ipdb;ipdb.set_trace()
     if std is None:
         for t, m in zip(input, mean):
             t.sub_(m)

@@ -1,5 +1,5 @@
 #!/bin/sh
-PYTHON=/mnt/proj58/xgxu/anaconda3/bin/python
+PYTHON=/work/sagnihot/miniconda3/envs/py39/bin/python
 
 
 dataset=cityscapes
