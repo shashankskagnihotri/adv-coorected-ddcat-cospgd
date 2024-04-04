@@ -71,50 +71,8 @@ def get_logger():
     return logger
 
 
-def FGSM(input, target, model, clip_min, clip_max, eps=0.2):
-    input_variable = input.detach().clone()
-    input_variable.requires_grad = True
-    model.zero_grad()
-    result = model(input_variable)
-    if args.zoom_factor != 8:
-        h = int((target.size()[1] - 1) / 8 * args.zoom_factor + 1)
-        w = int((target.size()[2] - 1) / 8 * args.zoom_factor + 1)
-        # 'nearest' mode doesn't support align_corners mode and 'bilinear' mode is fine for downsampling
-        target = F.interpolate(target.unsqueeze(1).float(), size=(h, w), mode='bilinear', align_corners=True).squeeze(1).long()
 
-    ignore_label = 255
-    criterion = nn.CrossEntropyLoss(ignore_index=ignore_label).cuda()
-    loss = criterion(result, target.detach())
-    loss.backward()
-    res = input_variable.grad
-
-    ################################################################################
-    adversarial_example = input.detach().clone()
-    adversarial_example[:, 0, :, :] = adversarial_example[:, 0, :, :] * std_origin[0] + mean_origin[0]
-    adversarial_example[:, 1, :, :] = adversarial_example[:, 1, :, :] * std_origin[1] + mean_origin[1]
-    adversarial_example[:, 2, :, :] = adversarial_example[:, 2, :, :] * std_origin[2] + mean_origin[2]
-    adversarial_example = adversarial_example + eps * torch.sign(res)
-    adversarial_example = torch.max(adversarial_example, clip_min)
-    adversarial_example = torch.min(adversarial_example, clip_max)
-    adversarial_example = torch.clamp(adversarial_example, min=0.0, max=1.0)
-
-    adversarial_example[:, 0, :, :] = (adversarial_example[:, 0, :, :] - mean_origin[0]) / std_origin[0]
-    adversarial_example[:, 1, :, :] = (adversarial_example[:, 1, :, :] - mean_origin[1]) / std_origin[1]
-    adversarial_example[:, 2, :, :] = (adversarial_example[:, 2, :, :] - mean_origin[2]) / std_origin[2]
-    ################################################################################
-    return adversarial_example
-
-
-
-def BIM(input, target, model, eps=0.03, k_number=2, alpha=0.01, normalize_layer=None):
-    """
-    input_unnorm = input.clone().detach()
-    input_unnorm[:, 0, :, :] = input_unnorm[:, 0, :, :] * std_origin[0] + mean_origin[0]
-    input_unnorm[:, 1, :, :] = input_unnorm[:, 1, :, :] * std_origin[1] + mean_origin[1]
-    input_unnorm[:, 2, :, :] = input_unnorm[:, 2, :, :] * std_origin[2] + mean_origin[2]
-    clip_min = input_unnorm - eps
-    clip_max = input_unnorm + eps
-    """
+def BIM(input, target, model, normalize_layer=None):
     global attack_name, attack_iterations, attack_epsilon, attack_alpha
     
     orig_images = input.detach().clone()
@@ -128,10 +86,9 @@ def BIM(input, target, model, eps=0.03, k_number=2, alpha=0.01, normalize_layer=
     adversarial_example = input.detach().clone()
     
     for itr in range(attack_iterations):
-        #adversarial_example = FGSM(adversarial_example, target, model, clip_min, clip_max, eps=alpha)
         model.zero_grad()
         adversarial_example.requires_grad = True
-        result = model(normalize_layer(adversarial_example))
+        result = model(normalize_layer(adversarial_example)) #NORMALIZE THE INPUT BEFORE PASSING IT TO THE MODEL
         loss = criterion(result, target.detach())
         if attack_name.lower()=='cospgd':
             loss = attack_funcs.cospgd_scale(predictions=result, labels=target, loss=loss, num_classes=21, targeted=False, one_hot=True)
@@ -203,7 +160,6 @@ def main():
         else:
             raise RuntimeError("=> no checkpoint found at '{}'".format(args.model_path))
         
-        #model = nn.Sequential(torchvision.transforms.Normalize(mean=mean_origin, std=std_origin), model)
         normalize_layer =  torchvision.transforms.Normalize(mean=mean, std=std)
         
         
@@ -213,17 +169,9 @@ def main():
 
 
 def net_process(model, image, target, mean, std=None, normalize_layer=None):
-    input = torch.from_numpy(image.transpose((2, 0, 1))).float()
+    input = torch.from_numpy(image.transpose((2, 0, 1))).float() # PLEASE NOTE: IMAGES HERE ARE BETWEEN [0, 255]
     target = torch.from_numpy(target).long()
 
-    """
-    if std is None:
-        for t, m in zip(input, mean):
-            t.sub_(m)
-    else:
-        for t, m, s in zip(input, mean, std):
-            t.sub_(m).div_(s)
-    """
     input = input.unsqueeze(0).cuda()
     target = target.unsqueeze(0).cuda()
 
@@ -236,14 +184,13 @@ def net_process(model, image, target, mean, std=None, normalize_layer=None):
         input = torch.cat([input, input.flip(3)], 0)
         target = torch.cat([target, target.flip(2)], 0)
 
-    #import ipdb;ipdb.set_trace()
     if attack_flag:
-        adver_input = BIM(input, target, model, eps=0.03, k_number=2, alpha=0.01, normalize_layer=normalize_layer)
+        adver_input = BIM(input, target, model, normalize_layer=normalize_layer)
         with torch.no_grad():
-            output = model(normalize_layer(adver_input))
+            output = model(normalize_layer(adver_input)) #NORMALIZE THE INPUT BEFORE PASSING IT TO THE MODEL
     else:
         with torch.no_grad():
-            output = model(normalize_layer(input))
+            output = model(normalize_layer(input)) #NORMALIZE THE INPUT BEFORE PASSING IT TO THE MODEL
 
     _, _, h_i, w_i = input.shape
     _, _, h_o, w_o = output.shape
