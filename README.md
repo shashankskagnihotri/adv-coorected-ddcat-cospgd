@@ -4,7 +4,7 @@
 
 # Here we correct the white-box attack implementations done in the [Original Repository](https://github.com/dvlab-research/Robust-Semantic-Segmentation).
 
-## Specifically we make changes only to tool_test/voc2012 files pertaining to the PSPNet implementation and extend the repository to include [PGD](https://arxiv.org/pdf/1706.06083.pdf), [SegPGD](https://arxiv.org/abs/2207.12391) and CosPGD attacks.
+## Specifically we make changes only to tool_test/voc2012 files pertaining to the PSPNet implementation and extend the repository to include [PGD](https://arxiv.org/pdf/1706.06083.pdf), [SegPGD](https://arxiv.org/abs/2207.12391) and [CosPGD](https://arxiv.org/abs/2302.02213) attacks.
 
 This is a pytorch project for the paper **Dynamic Divide-and-Conquer Adversarial Training for Robust Semantic Segmentation** by Xiaogang Xu, Hengshuang Zhao and Jiaya Jia presented at **ICCV2021**.
 
